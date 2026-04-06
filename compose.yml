@@ -1,0 +1,116 @@
+x-temporal-admin: &x-temporal-admin
+  entrypoint: [""]
+  environment: &x-temporal-admin-env
+    TEMPORAL_ADDRESS: temporal:7233
+    TEMPORAL_CLI_ADDRESS: temporal:7233
+    MYSQL_USER: temporal
+    MYSQL_PWD: pass1234
+    MYSQL_SEEDS: mysql # mysql hostname
+    DBNAME: temporal
+    VISIBILITY_DBNAME: temporal_visibility
+  volumes:
+    - ./tools/temporal/:/tmp/temporal/
+
+services:
+  dev:
+    image: dev_example_temporal
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 8080:8080
+    volumes:
+      - ./:/src/
+      - ~/.gitconfig:/.gitconfig
+      - ~/.ssh/:/.ssh/
+    tty: true
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: mysql
+      MYSQL_USER: temporal
+      MYSQL_PASSWORD: pass1234
+      MYSQL_ROOT_PASSWORD: secret
+    volumes:
+      - mysql:/var/lib/mysql
+      - ./tools/mysql/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./tools/mysql/scripts/:/docker-entrypoint-initdb.d/
+    healthcheck:
+      test: >-
+        mysqladmin ping -h localhost -u temporal -p$$MYSQL_PASSWORD
+      interval: 5s
+      timeout: 20s
+      retries: 10
+      start_period: 30s
+  temporal:
+    image: temporalio/server:1.29.1
+    depends_on:
+      mysql:
+        condition: service_healthy
+      temporal-migrate:
+        condition: service_completed_successfully
+    environment:
+      DB: mysql8
+      DBNAME: temporal
+      DB_PORT: 3306
+      MYSQL_USER: temporal
+      MYSQL_PWD: pass1234
+      MYSQL_SEEDS: mysql # mysql hostname
+      VISIBILITY_DBNAME: temporal_visibility
+      VISIBILITY_DB_PORT: 3306
+      VISIBILITY_MYSQL_SEEDS: mysql
+      VISIBILITY_MYSQL_USER: temporal
+      VISIBILITY_MYSQL_PWD: pass1234
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      BIND_ON_IP: 0.0.0.0
+    volumes:
+      - ./tools/temporal:/etc/temporal/config/dynamicconfig
+    healthcheck:
+      test: >-
+        temporal operator cluster health | grep -q SERVING
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+  temporal-migrate:
+    image: temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
+    command:
+      - bash
+      - /tmp/temporal/migrate.sh
+    <<: *x-temporal-admin
+    depends_on:
+      mysql:
+        condition: service_healthy
+  temporal-default-data:
+    image: temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
+    command:
+      - bash
+      - /tmp/temporal/setup.sh
+    <<: *x-temporal-admin
+    depends_on:
+      temporal:
+        condition: service_healthy
+  temporal-admin-tools:
+    image: temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
+    environment: *x-temporal-admin-env
+    stdin_open: true
+    tty: true
+    depends_on:
+      temporal:
+        condition: service_healthy
+      temporal-default-data:
+        condition: service_completed_successfully
+  temporal-ui:
+    image: temporalio/ui:2.44.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - 18880:8080
+    depends_on:
+      temporal:
+        condition: service_healthy
+      temporal-default-data:
+        condition: service_completed_successfully
+volumes:
+  mysql:
