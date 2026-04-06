@@ -1,19 +1,21 @@
-package main
+package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
-func temporalClient() (client.Client, error) {
+func NewClient() (client.Client, error) {
 	c, err := client.Dial(client.Options{
 		HostPort: "temporal:7233",
 	})
@@ -39,6 +41,12 @@ type UserReplyInput struct {
 // ----------------------------------------------------------------------------
 // Workflow
 // ----------------------------------------------------------------------------
+const errTypeChatProcessing = "ErrChatProcessing"
+
+var (
+	ErrChatProcessing = fmt.Errorf("currently processing, please wait")
+)
+
 func ChatWorkflow(ctx workflow.Context) error {
 	logger := workflow.GetLogger(ctx)
 
@@ -61,7 +69,7 @@ func ChatWorkflow(ctx workflow.Context) error {
 		workflow.UpdateHandlerOptions{
 			Validator: func(ctx workflow.Context, input UserReplyInput) error {
 				if processing {
-					return fmt.Errorf("currently processing, please wait")
+					return temporal.NewApplicationErrorWithOptions(ErrChatProcessing.Error(), errTypeChatProcessing, temporal.ApplicationErrorOptions{NonRetryable: true})
 				}
 				return nil
 			},
@@ -118,7 +126,7 @@ var (
 )
 
 func UpdateWorkflowWithUserMessage(ctx context.Context, input UserReplyInput) (string, error) {
-	temporalClient, err := temporalClient()
+	temporalClient, err := NewClient()
 	if err != nil {
 		slog.Error(fmt.Sprintf("Unable to create client: %v", err))
 		os.Exit(1)
@@ -146,7 +154,8 @@ func UpdateWorkflowWithUserMessage(ctx context.Context, input UserReplyInput) (s
 		},
 	)
 	if err != nil {
-		if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+		if errors.As(err, &alreadyStarted) {
 			return "", ErrChatAlreadyCompleted
 		}
 		slog.Error(fmt.Sprintf("[handleChat] UpdateWithStart failed: %v", err))
@@ -156,7 +165,11 @@ func UpdateWorkflowWithUserMessage(ctx context.Context, input UserReplyInput) (s
 	var result string
 	if err := updateHandle.Get(ctx, &result); err != nil {
 		slog.Error(fmt.Sprintf("[handleChat] Update error: %v", err))
-		return "", fmt.Errorf("update error: %v", err)
+		var appErr *temporal.ApplicationError
+		if errors.As(err, &appErr) && appErr.Type() == errTypeChatProcessing {
+			return "", ErrChatProcessing
+		}
+		return "", fmt.Errorf("update error: %w", err)
 	}
 
 	return result, nil

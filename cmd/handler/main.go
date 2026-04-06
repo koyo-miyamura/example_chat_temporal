@@ -1,12 +1,32 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/signal"
+	"syscall"
+
+	"github.com/koyo-miyamura/example_chat_temporal/internal/chat"
 )
+
+func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	go func() {
+		slog.Info("API server started...")
+		if err := http.ListenAndServe(":8080", newServer()); err != nil {
+			slog.Error(fmt.Sprintf("Unable to start server: %v", err))
+		}
+	}()
+
+	<-ctx.Done()
+	slog.Info("shutdown")
+}
 
 func newServer() *http.ServeMux {
 	mux := http.NewServeMux()
@@ -33,16 +53,20 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updateInput := UserReplyInput{
+	updateInput := chat.UserReplyInput{
 		Text:   r.URL.Query().Get("data"),
 		UserID: userID,
 		ChatID: chatID,
 	}
 
-	result, err := UpdateWorkflowWithUserMessage(r.Context(), updateInput)
+	result, err := chat.UpdateWorkflowWithUserMessage(r.Context(), updateInput)
 	if err != nil {
-		if errors.Is(err, ErrChatAlreadyCompleted) {
+		if errors.Is(err, chat.ErrChatAlreadyCompleted) {
 			http.Error(w, "Chat already completed", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, chat.ErrChatProcessing) {
+			http.Error(w, "Chat is currently processing, please wait", http.StatusConflict)
 			return
 		}
 		slog.Error(fmt.Sprintf("[handleChat] UpdateWorkflowWithUserMessage error: %v", err))

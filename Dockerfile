@@ -11,4 +11,4 @@ ENV TZ=Asia/Tokyo
 
 WORKDIR /src
 
-CMD [ "go", "run", "./cmd" ]
+CMD [ "go", "run", "./cmd/handler" ]

@@ -12,11 +12,12 @@ x-temporal-admin: &x-temporal-admin
     - ./tools/temporal/:/tmp/temporal/
 
 services:
-  dev:
+  handler:
     image: dev_example_temporal
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["go", "run", "./cmd/handler"]
     ports:
       - 8080:8080
     volumes:
@@ -24,6 +25,19 @@ services:
       - ~/.gitconfig:/.gitconfig
       - ~/.ssh/:/.ssh/
     tty: true
+    depends_on:
+      temporal:
+        condition: service_healthy
+  worker:
+    image: dev_example_temporal
+    command: ["go", "run", "./cmd/worker"]
+    volumes:
+      - ./:/src/
+      - ~/.gitconfig:/.gitconfig
+      - ~/.ssh/:/.ssh/
+    depends_on:
+      temporal:
+        condition: service_healthy
   mysql:
     image: mysql:8.4
     environment:
